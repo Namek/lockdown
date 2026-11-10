@@ -71,6 +71,7 @@ message(STATUS "Lockdown -- tacent_SOURCE_DIR: ${tacent_SOURCE_DIR}")
 # Files needed to create executable.
 add_executable(
 	${PROJECT_NAME}
+	Src/GamepadInput.cpp
 	Src/Lockdown.cpp
 	Src/Version.cmake.h
 	Src/Version.cpp
@@ -83,7 +84,6 @@ target_include_directories(
 	PRIVATE
 		${CMAKE_CURRENT_SOURCE_DIR}/Src
 		${CMAKE_CURRENT_SOURCE_DIR}/Res
-		${CMAKE_CURRENT_SOURCE_DIR}/Lib/libgamepad/include
 )
 
 target_compile_definitions(
@@ -147,10 +147,7 @@ endif()
 
 # Dependencies.
 target_link_libraries(${PROJECT_NAME} PRIVATE
-	Foundation Math System Comctl32.lib
-	$<$<CONFIG:Debug>:${CMAKE_CURRENT_SOURCE_DIR}/Lib/libgamepad/debug/gamepad.lib>
-	$<$<CONFIG:Release>:${CMAKE_CURRENT_SOURCE_DIR}/Lib/libgamepad/release/gamepad.lib>
-	$<$<CONFIG:Ship>:${CMAKE_CURRENT_SOURCE_DIR}/Lib/libgamepad/release/gamepad.lib>
+	Foundation Math System Comctl32.lib Hid.lib
 )
 
 if (MSVC)

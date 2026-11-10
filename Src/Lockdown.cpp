@@ -21,8 +21,8 @@
 #include <Math/tVector2.h>
 #include <tchar.h>
 #include <commctrl.h>
+#include "GamepadInput.h"
 #include "resource.h"
-#include <libgamepad.hpp>
 #include "Version.cmake.h"
 #pragma warning(disable: 4996)
 using namespace tMath;
@@ -39,7 +39,7 @@ tCmdLine::tOption OptionKeyboard			("Detect any keyboard input",		"keyboard",	'k
 tCmdLine::tOption OptionMouseMovement		("Detect any mouse movement.",		"movement",	'v'			);
 tCmdLine::tOption OptionMouseButton			("Detect any mouse button presses.","button",	'b'			);
 tCmdLine::tOption OptionPadButtons			("Detect any gamepad button input.","pad",		'p'			);
-tCmdLine::tOption OptionAxis				("Detect any gamepad axis changes.","axis",		'a'			);
+tCmdLine::tOption OptionLegacyAxis			("Legacy alias for --pad.",			"axis",		'a'			);
 
 
 namespace Lockdown
@@ -63,19 +63,13 @@ namespace Lockdown
 	LRESULT CALLBACK Hook_Keyboard(int code, WPARAM, LPARAM);
 	LRESULT CALLBACK Hook_Mouse(int code, WPARAM, LPARAM);
 
-	void Hook_GamepadButton(std::shared_ptr<gamepad::device>);
-	void Hook_GamepadAxis(std::shared_ptr<gamepad::device>);
-	void Hook_GamepadConnect(std::shared_ptr<gamepad::device>);
-	void Hook_GamepadDisconnect(std::shared_ptr<gamepad::device>);
-
 	enum ExitCode
 	{
 		ExitCode_Success,
 		ExitCode_AlreadyRunning,
 		ExitCode_CommonControlsInitFailure,
 		ExitCode_RegisterClassFailure,
-		ExitCode_CreateWindowFailure,
-		ExitCode_XInputGamepadHookFailure
+		ExitCode_CreateWindowFailure
 	};
 }
 
@@ -94,6 +88,16 @@ LRESULT CALLBACK Lockdown::MainWinProc(HWND hwnd, UINT message, WPARAM wparam, L
 			if (NotifyIconAdded)
 				Shell_NotifyIcon(NIM_DELETE, &NotifyIconData);
 			PostQuitMessage(0);
+			break;
+
+		case WM_INPUT:
+			if (GamepadInput::ButtonPressed(reinterpret_cast<HRAWINPUT>(lparam)))
+				CountdownSeconds = SecondsToLock;
+			break;
+
+		case WM_INPUT_DEVICE_CHANGE:
+			if (wparam == GIDC_REMOVAL)
+				GamepadInput::RemoveDevice(reinterpret_cast<HANDLE>(lparam));
 			break;
 
 		case WM_TIMER:
@@ -178,7 +182,6 @@ LRESULT CALLBACK Lockdown::MainWinProc(HWND hwnd, UINT message, WPARAM wparam, L
 					tsPrintf
 					(
 						messageString,
-						// @todo Support command line options for gamepad buttons, gamepad axis, mouse buttons, mouse movement, keyboard, timeout minutes.
 						"Lockdown V%d.%d.%d by Tristan Grimmer.\n"
 						"Under ISC licence (similar to MIT).\n\n"
 						"Homepage at https://github.com/bluescan/lockdown\n"
@@ -195,13 +198,18 @@ LRESULT CALLBACK Lockdown::MainWinProc(HWND hwnd, UINT message, WPARAM wparam, L
 						"\n"
 						"The current timeout is %d minutes and %d seconds.\n"
 						"By default the timer is reset on keyboard activity, mouse\n"
-						"button presses, mouse movement, gamepad button presses,\n"
-						"and gamepad axis displacement.\n",
+						"button presses, mouse movement, and gamepad button presses.\n"
+						"\n"
+						"Controller support modified by Kamil \"Namek\" Dąbrowski.\n"
+						"PS5 DualSense buttons and D-pad work over USB and Bluetooth.\n"
+						"Supports multiple controllers connecting and disconnecting.\n"
+						"Analog stick and trigger movement is ignored.\n",
 						LockdownVersion::Major, LockdownVersion::Minor, LockdownVersion::Revision, Lockdown::SecondsToLock/60, Lockdown::SecondsToLock%60
 					);
-					::MessageBox
+					tStringUTF16 wideMessageString(messageString);
+					::MessageBoxW
 					(
-						hwnd, messageString.Chr(), "About Lockdown", MB_OK | MB_ICONINFORMATION
+						hwnd, wideMessageString.GetLPWSTR(), L"About Lockdown", MB_OK | MB_ICONINFORMATION
 					);
 					break;
 				}
@@ -320,60 +328,6 @@ LRESULT CALLBACK Lockdown::Hook_Mouse(int code, WPARAM wparam, LPARAM lparam)
 }
 
 
-void Lockdown::Hook_GamepadButton(std::shared_ptr<gamepad::device> dev)
-{
-	tdPrintf
-	(
-		"Received button event: Native id: %i, Virtual id: 0x%X (%i) val: %f\n",
-		dev->last_button_event()->native_id, dev->last_button_event()->vc,
-		dev->last_button_event()->vc, dev->last_button_event()->virtual_value
-	);
-
-	// Any button press on any gamepad resets the countdown.
-	// @todo Test that LB RB bumper buttons reset.
-	// @todo Ideally this write would be mutex protected.
-	CountdownSeconds = SecondsToLock;
-};
-
-
-void Lockdown::Hook_GamepadAxis(std::shared_ptr<gamepad::device> dev)
-{
-	tdPrintf
-	(
-		"Received axis event: Native id: %i, Virtual id: 0x%X (%i) val: %f\n",
-		dev->last_axis_event()->native_id, dev->last_axis_event()->vc,
-		dev->last_axis_event()->vc, dev->last_axis_event()->virtual_value
-	);
-
-	// The gamepad device already deals with axis dead-zones. This means we can safely ignore
-	// the fact that we're getting events from different gamepads and 'wobbling' between
-	// them. We can simply reset the countdown on any axis event -- regardless of which
-	// gamepad or the particular axis.
-
-	// @todo Test that LT RT triggers reset.
-	// @todo Ideally this write would be mutex protected.
-	CountdownSeconds = SecondsToLock;
-};
-
-
-void Lockdown::Hook_GamepadConnect(std::shared_ptr<gamepad::device> dev)
-{
-	tdPrintf("%s connected\n", dev->get_name().c_str());
-
-	// @todo Ideally this write would be mutex protected.
-	CountdownSeconds = SecondsToLock;
-};
-
-
-void Lockdown::Hook_GamepadDisconnect(std::shared_ptr<gamepad::device> dev)
-{
-	tdPrintf("%s disconnected\n", dev->get_name().c_str());
-
-	// On a gamepad disconnect it makes sense _not_ to coult it as an input. One might,
-	// for example, be disconnecting the gamepad when leaving for the day.
-};
-
-
 int WINAPI WinMain(HINSTANCE hinstance, HINSTANCE hprevInstance, LPSTR cmdLine, int cmdShow)
 {
 	// If one is already running, do not start another.
@@ -404,17 +358,19 @@ int WINAPI WinMain(HINSTANCE hinstance, HINSTANCE hprevInstance, LPSTR cmdLine, 
 		Lockdown::MaxSuspendSeconds = suspendOverride;
 	Lockdown::CountdownSuspendSeconds = Lockdown::MaxSuspendSeconds;
 
+	if (OptionLegacyAxis.IsPresent())
+		OptionPadButtons.Present = true;
+
 	if
 	(
 		!OptionKeyboard.IsPresent()		&& !OptionMouseMovement.IsPresent()		&& !OptionMouseButton.IsPresent() &&
-		!OptionPadButtons.IsPresent()	&& !OptionAxis.IsPresent()
+		!OptionPadButtons.IsPresent()
 	)
 	{
 		OptionKeyboard.Present = true;
 		OptionMouseMovement.Present = true;
 		OptionMouseButton.Present = true;
 		OptionPadButtons.Present = true;
-		OptionAxis.Present = true;
 	}
 
 	if (OptionKeyboard.IsPresent())
@@ -469,7 +425,8 @@ int WINAPI WinMain(HINSTANCE hinstance, HINSTANCE hprevInstance, LPSTR cmdLine, 
 			u8""
 			"Lockdown is a system-tray program that locks the computer after a period of "
 			"inactivity. It can monitor user input from keyboard, mouse, and gamepads. If no "
-			"inputs are specified on the command line (-kvbpa), all inputs are monitored.",
+			"inputs are specified on the command line (-kvbp), all are monitored. "
+			"Only gamepad button presses count as activity.",
 			LockdownVersion::Major, LockdownVersion::Minor, LockdownVersion::Revision
 		);
 		::MessageBox(hwnd, usage.Chr(), "Lockdown CLI Usage", MB_OK | MB_ICONINFORMATION);
@@ -509,26 +466,8 @@ int WINAPI WinMain(HINSTANCE hinstance, HINSTANCE hprevInstance, LPSTR cmdLine, 
 	// Send a timer message every second.
 	SetTimer(hwnd, 42, 1000, NULL);
 
-	// Hook into gamepad/controller events.
-	if (OptionPadButtons.IsPresent() || OptionAxis.IsPresent())
-	{
-		auto hook = gamepad::hook::make();
-		hook->set_plug_and_play(true, gamepad::ms(1000));
-		hook->set_sleep_time(gamepad::ms(100)); // 10fps poll.
-		if (OptionPadButtons.IsPresent())
-			hook->set_button_event_handler(Lockdown::Hook_GamepadButton);
-		if (OptionAxis.IsPresent())
-			hook->set_axis_event_handler(Lockdown::Hook_GamepadAxis);
-		hook->set_connect_event_handler(Lockdown::Hook_GamepadConnect);
-		hook->set_disconnect_event_handler(Lockdown::Hook_GamepadDisconnect);
-
-		if (!hook->start())
-		{
-			tdPrintf("Couldn't start gamepad hook.\n");
-			DestroyWindow(hwnd);
-			return Lockdown::ExitCode_XInputGamepadHookFailure;
-		}
-	}
+	if (OptionPadButtons.IsPresent() && !GamepadInput::Register(hwnd))
+		tdPrintf("Couldn't register gamepad input.\n");
 
   	MSG msg;
 	while (GetMessage(&msg, NULL, 0, 0))
